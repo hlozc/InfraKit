@@ -16,10 +16,10 @@ import (
 
 var minioClient *minio.Client
 var location string = "" // 暂时用不到
-var minioUrl string = "xxxxxxxxxxx"
+var minioUrl string = ""
 var minioPort int = 9000
-var minioAccessKey string = "xxxxxxxxx"
-var minioSecretKey string = "xxxxxxxxxx"
+var minioAccessKey string = ""
+var minioSecretKey string = ""
 
 var mimeTypeMap = map[string]string{
 	".jpg":  "image/jpeg",
@@ -89,6 +89,7 @@ func MakeBucket(bucketName string) error {
 	return err
 }
 
+// 根据内容来判断文件 mime 类型
 func detectContentType(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -120,7 +121,7 @@ func getContentType(filePath string) (string, error) {
 	return "application/octet-stream", nil // default
 }
 
-// 上传对象(内存)
+// 上传对象（内存级）
 func UploadOjbect(bucketName string, data []byte, n int64, objName string) bool {
 	reader := bytes.NewReader(data)
 
@@ -150,4 +151,62 @@ func FUploadObject(bucketName string, filePath string, objName string) bool {
 
 	log.Printf("Successfully uploaded %s of size %d\n", objName, info.Size)
 	return true
+}
+
+// 获取该用户指定对象的 obj 资源的 url (私有的也可以直接通过这个 URL 下载)
+func PresignedObjectURL(bucketName, objName string, expiry time.Duration) (string, error) {
+	url, err := minioClient.PresignedGetObject(context.Background(), bucketName, objName, expiry, nil)
+	if err != nil {
+		log.Println("Get object url fail, reason: ", err)
+		return "", err
+	}
+
+	return url.String(), nil
+}
+
+func ObjectInfo(bucketName, objName string) *minio.ObjectInfo {
+	info, err := minioClient.StatObject(context.Background(), bucketName, objName, minio.GetObjectOptions{})
+	if err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil
+		}
+		log.Println("StatObject fail, Reason: ", err)
+		return nil
+	}
+
+	return &info
+}
+
+func DeleteObject(bucketName, objName string) error {
+	err := minioClient.RemoveObject(context.Background(), bucketName, objName, minio.RemoveObjectOptions{})
+	if err != nil {
+		log.Println("Delete object fail, Reason: ", err)
+		return err
+	}
+
+	return nil
+}
+
+// 通过管道的方式来删除，和 MinIO 的交互是并发的，并且逐个传递对象，内存开销不会暴增
+func DeleteObjects(bucketName string, objNames []string) {
+	objCh := make(chan minio.ObjectInfo)
+
+	// 启动一个协程，将要删除的 obj 逐个放到管道里面
+	go func() {
+		defer close(objCh)
+
+		for _, objName := range objNames {
+			objCh <- minio.ObjectInfo{Key: objName}
+		}
+	}()
+
+	for err := range minioClient.RemoveObjects(context.Background(), bucketName, objCh, minio.RemoveObjectsOptions{}) {
+		if err.Err != nil {
+			fmt.Println(err.ObjectName, " Delete Fail, Reason: ", err.Err)
+		}
+	}
+}
+
+func init() {
+	NewMinioClient()
 }
